@@ -9,17 +9,37 @@ Ansible project for running **CIS-CAT Pro Assessor** monthly assessments via **A
 ```
 cis-cat-awx/
 ├── playbooks/
-│   └── cis_cat_monthly.yml       # Main assessment playbook
+│   └── cis_cat_monthly.yml           # Main assessment playbook
+├── scripts/
+│   └── run_assessor.sh               # Assessor wrapper — deployed by playbook
 ├── config/
-│   ├── assessor_targets.conf     # Target hosts + benchmark mappings
-│   └── awx_job_template.yml      # AWX Job Template reference config
+│   ├── targets_windows.conf          # Windows Server targets
+│   ├── targets_linux_group1.conf     # Linux Group 1 targets (web/app)
+│   ├── targets_linux_group2.conf     # Linux Group 2 targets (db/infra)
+│   └── awx_job_template.yml          # AWX Job Template reference (3 templates)
 ├── docs/
-│   └── setup.md                  # Detailed setup guide
+│   └── setup.md                      # Detailed setup guide
 ├── .gitignore
 └── README.md
 ```
 
-> **Note:** The CIS-CAT Pro Assessor tool itself lives in a separate path on the AWX node (`/var/lib/awx/projects/cis_assessor/Assessor/`) and is **not** tracked in this repository. Only the orchestration playbook and target configuration are managed here.
+> **Note:** The CIS-CAT Pro Assessor binaries, JRE, and benchmark XMLs live at
+> `/var/lib/awx/projects/cis_assessor/Assessor/` and are **not** tracked here.
+> This repo manages the orchestration playbook, the wrapper script, and all target configuration.
+
+### Deployment model
+
+```
+Git repo (this)                      AWX node (runtime)
+───────────────────────────────      ──────────────────────────────────────────
+scripts/run_assessor.sh        →     /var/lib/awx/projects/cis_assessor/
+  (synced by playbook on             Assessor/run_assessor.sh
+   every Job Template run)
+
+config/targets_*.conf                /var/lib/awx/projects/cis_assessor/
+  (read directly from the      →     Assessor/../config/targets_*.conf
+   AWX project mount)                (path injected via AWX survey)
+```
 
 ---
 
@@ -29,7 +49,7 @@ cis-cat-awx/
 |---|---|
 | AWX / Ansible Tower | 4.x or later |
 | CIS-CAT Pro Assessor | Installed and tested at `assessor_dir` |
-| Java | Required by Assessor-CLI.sh (on AWX node) |
+| Java | Bundled JRE at `assessor_dir/jre/` |
 | AWX Custom Credential | Injects `ASSESSOR_ENCRYPT_PASSWORD` env var |
 
 ---
@@ -50,58 +70,70 @@ In AWX → **Projects → Add**:
 
 ### 2. Configure Target Hosts
 
-Edit `config/assessor_targets.conf` and add one line per target:
+Edit the appropriate `config/targets_*.conf` file and add one pipe-delimited line per target:
 
 ```
-# HOST                  BENCHMARK XML                              PROFILE
-webserver01.corp.lan    CIS_Ubuntu_Linux_22.04_LTS_Benchmark.xml   Level 1 - Server
-winserver02.corp.lan    CIS_Microsoft_Windows_Server_2022.xml       Level 1 - Member Server
+# <config_xml>|<label>|<profile>
+targets_ubuntu22_prod.xml|web-prod-01|Level 1 - Server
+targets_win2022.xml|dc01|Level 1 - Domain Controller
 ```
 
-Commit and push the change.
+Commit and push the change — AWX pulls the latest on each run.
 
-### 3. Create the AWX Job Template
+### 3. Create the AWX Job Templates
 
-Refer to `config/awx_job_template.yml` for all recommended settings. Key fields:
+Three templates share one playbook. See `config/awx_job_template.yml` for full settings.
 
-- **Playbook:** `playbooks/cis_cat_monthly.yml`
-- **Inventory:** `localhost` (built-in)
-- **Credential:** Custom credential that injects `ASSESSOR_ENCRYPT_PASSWORD`
+| Template Name | Survey Default | Schedule |
+|---|---|---|
+| CIS-CAT Pro \| Windows Servers | `targets_windows.conf` | 1st @ 02:00 UTC |
+| CIS-CAT Pro \| Linux Servers — Group 1 | `targets_linux_group1.conf` | 1st @ 03:00 UTC |
+| CIS-CAT Pro \| Linux Servers — Group 2 | `targets_linux_group2.conf` | 1st @ 04:00 UTC |
 
-### 4. Set the Monthly Schedule
+Each template requires a **Survey** with one question:
 
-In the Job Template → **Schedules → Add**:
+| Field | Value |
+|---|---|
+| Variable name | `survey_targets_config` |
+| Type | Text |
+| Default | Full path to the matching `targets_*.conf` |
 
-- **Name:** `Monthly — 1st of month 02:00 UTC`
-- **Start date/time:** first of next month, 02:00 UTC
-- **Repeat:** Monthly
+### 4. Attach the Credential
+
+Create a custom AWX credential type that injects `ASSESSOR_ENCRYPT_PASSWORD` as an env var, and attach it to all three Job Templates.
 
 ---
 
 ## Variables
 
-All variables are defined in the playbook. Override via AWX **Extra Variables** if needed.
-
-| Variable | Default | Description |
+| Variable | Source | Description |
 |---|---|---|
-| `assessor_dir` | `/var/lib/awx/projects/cis_assessor/Assessor` | Absolute path to the Assessor installation |
-| `assessor_script` | `{{ assessor_dir }}/run_assessor.sh` | Wrapper script called by the playbook |
-| `assessor_log_base` | `{{ assessor_dir }}/logs` | Log directory (rotated after 90 days) |
-| `targets_config` | `{{ assessor_dir }}/../config/assessor_targets.conf` | Target host config file |
+| `assessor_dir` | Playbook default | Path to the Assessor installation on the AWX node |
+| `assessor_script` | Playbook default | Points to the deployed `run_assessor.sh` |
+| `assessor_log_base` | Playbook default | Log directory (auto-rotated after 90 days) |
+| `survey_targets_config` | **AWX Survey** | Full path to the targets `.conf` for this run |
+| `ASSESSOR_ENCRYPT_PASSWORD` | AWX Credential | Report encryption password |
+| `TARGETS_CONFIG` | Set by playbook | Passed to `run_assessor.sh` from `survey_targets_config` |
 
 ---
 
-## Log Rotation
+## Script Management
 
-Logs older than **90 days** are automatically deleted at the end of each successful run. Log directories are expected to be named by date (e.g. `2024-01-01/`) under `assessor_log_base`.
+`scripts/run_assessor.sh` is version-controlled here and **automatically deployed** to the
+Assessor directory at the start of every playbook run. This means:
+
+- Script changes are reviewed via Git (PRs / commits)
+- The AWX node is always running the latest approved version
+- No manual file transfers needed after the initial deploy
 
 ---
 
 ## Security Notes
 
-- The `.assessor_pass` file is excluded from Git via `.gitignore` — **never commit secrets**.
-- Use AWX custom credentials to inject `ASSESSOR_ENCRYPT_PASSWORD` rather than hardcoding it.
-- Reports are generated in encrypted form by the Assessor tool and stored locally on the AWX node.
+- `.assessor_pass` is excluded from Git via `.gitignore` — **never commit secrets**
+- Use AWX custom credentials to inject `ASSESSOR_ENCRYPT_PASSWORD`
+- The debug password echo (`DEBUG len=... md5=...`) has been removed from the script
+- Reports are generated in encrypted form by the Assessor tool
 
 ---
 
