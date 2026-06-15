@@ -1,0 +1,67 @@
+---
+# AWX Job Template — CIS-CAT Pro Monthly Assessment
+#
+# This file documents the recommended AWX Job Template settings.
+# Import or configure manually in your AWX / Ansible Tower instance.
+#
+# -----------------------------------------------------------------
+# JOB TEMPLATE SETTINGS
+# -----------------------------------------------------------------
+name: "CIS-CAT Pro | Monthly Assessment"
+description: >
+  Runs CIS-CAT Pro Assessor against all targets defined in
+  config/assessor_targets.conf on a monthly schedule.
+  Generates encrypted HTML/XML reports and rotates logs older than 90 days.
+
+job_type: run
+inventory: "localhost"          # AWX built-in localhost inventory
+project: "cis-cat-awx"         # Name of this Git project in AWX
+playbook: "playbooks/cis_cat_monthly.yml"
+
+# -----------------------------------------------------------------
+# CREDENTIALS
+# -----------------------------------------------------------------
+credentials:
+  - name: "CIS-CAT Assessor Password"
+    credential_type: "Custom — CIS-CAT Assessor"
+    # Must inject ASSESSOR_ENCRYPT_PASSWORD as an environment variable.
+    # Create a custom credential type with the following injector:
+    #
+    #   env:
+    #     ASSESSOR_ENCRYPT_PASSWORD: "{{ password }}"
+    #
+    # OR: the playbook reads the password from:
+    #   /var/lib/awx/projects/cis_assessor/Assessor/config/.assessor_pass
+
+# -----------------------------------------------------------------
+# EXTRA VARIABLES (optional overrides)
+# -----------------------------------------------------------------
+extra_vars:
+  assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
+  # assessor_log_base: "/var/lib/awx/projects/cis_assessor/Assessor/logs"
+
+# -----------------------------------------------------------------
+# SCHEDULE — Monthly on the 1st at 02:00 UTC
+# -----------------------------------------------------------------
+schedules:
+  - name: "Monthly — 1st of month 02:00 UTC"
+    rrule: "DTSTART:20240101T020000Z RRULE:FREQ=MONTHLY;BYMONTHDAY=1"
+    enabled: true
+
+# -----------------------------------------------------------------
+# JOB SETTINGS
+# -----------------------------------------------------------------
+forks: 1
+verbosity: 1            # 0=normal, 1=verbose, 2=more verbose
+timeout: 7800           # seconds (slightly above async 7200 + overhead)
+allow_simultaneous: false
+ask_variables_on_launch: false
+ask_credential_on_launch: false
+
+# -----------------------------------------------------------------
+# NOTIFICATIONS (configure after initial setup)
+# -----------------------------------------------------------------
+# notification_templates_started:   []
+# notification_templates_success:   []
+# notification_templates_error:
+#   - "Email — Security Team on Failure"

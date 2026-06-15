@@ -1,0 +1,44 @@
+# -----------------------------------------------
+# CIS-CAT AWX Project — .gitignore
+# -----------------------------------------------
+
+# Secrets — never commit these
+**/.assessor_pass
+**/passwords.yml
+**/vault.yml
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+
+# CIS-CAT generated reports (large, environment-specific)
+Assessor/reports/
+reports/
+
+# CIS-CAT logs
+Assessor/logs/
+logs/
+
+# Ansible retry files
+*.retry
+
+# Python / virtual environments
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor/IDE artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS metadata
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak

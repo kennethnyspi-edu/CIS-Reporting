@@ -1,0 +1,119 @@
+---
+- name: "CIS-CAT Pro | Monthly Assessment Run"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    # Path inside the AWX pod — matches project mount
+    assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
+    assessor_script: "{{ assessor_dir }}/run_assessor.sh"
+    assessor_log_base: "{{ assessor_dir }}/logs"
+    targets_config: "{{ assessor_dir }}/../config/assessor_targets.conf"
+
+  tasks:
+
+    - name: "CIS-CAT | Verify Assessor-CLI.sh exists"
+      ansible.builtin.stat:
+        path: "{{ assessor_dir }}/Assessor-CLI.sh"
+      register: assessor_cli_stat
+      failed_when: not assessor_cli_stat.stat.exists
+
+    - name: "CIS-CAT | Read assessor password from file"
+      ansible.builtin.shell:
+        cmd: >
+          cat /var/lib/awx/projects/cis_assessor/Assessor/config/.assessor_pass
+        executable: /bin/bash
+      register: assessor_password
+      changed_when: false
+      no_log: true
+
+    - name: "CIS-CAT | Verify targets config exists"
+      ansible.builtin.stat:
+        path: "{{ targets_config }}"
+      register: targets_stat
+      failed_when: not targets_stat.stat.exists
+
+    - name: "CIS-CAT | Verify log directory is writable"
+      ansible.builtin.shell:
+        cmd: >
+          test -d "{{ assessor_log_base }}" &&
+          test -w "{{ assessor_log_base }}" &&
+          echo "writable"
+        executable: /bin/bash
+      register: log_dir_check
+      failed_when: "'writable' not in log_dir_check.stdout"
+      changed_when: false
+
+    - name: "CIS-CAT | Verify scripts are executable"
+      ansible.builtin.shell:
+        cmd: >
+          test -x "{{ assessor_dir }}/Assessor-CLI.sh" &&
+          test -x "{{ assessor_dir }}/run_assessor.sh" &&
+          echo "executable"
+        executable: /bin/bash
+      register: exec_check
+      failed_when: "'executable' not in exec_check.stdout"
+      changed_when: false
+
+    - name: "CIS-CAT | Run monthly assessments"
+      ansible.builtin.shell:
+        cmd: "{{ assessor_script }}"
+        executable: /bin/bash
+      environment:
+        ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout }}"
+      register: assessor_run
+      async: 7200
+      poll: 30
+      ignore_errors: true
+      no_log: false
+
+    - name: "CIS-CAT | Print assessment output"
+      ansible.builtin.debug:
+        msg: "{{ assessor_run.stdout_lines }}"
+      when:
+        - assessor_run.stdout_lines is defined
+        - assessor_run.stdout_lines | length > 0
+
+    - name: "CIS-CAT | Print errors if any"
+      ansible.builtin.debug:
+        msg: "{{ assessor_run.stderr_lines }}"
+      when:
+        - assessor_run is defined
+        - assessor_run.stderr_lines is defined
+        - assessor_run.stderr_lines | length > 0
+
+    - name: "CIS-CAT | Fail if encrypt password not set"
+      ansible.builtin.fail:
+        msg: >-
+          ASSESSOR_ENCRYPT_PASSWORD is not set.
+          Attach the CIS-CAT Assessor credential to this Job Template.
+      when:
+        - assessor_run is defined
+        - assessor_run.msg is defined
+        - "'assessor_encrypt_password' in assessor_run.msg"
+
+    - name: "CIS-CAT | Fail if assessments failed"
+      ansible.builtin.fail:
+        msg: >-
+          One or more assessments failed.
+          Check logs in {{ assessor_log_base }}
+      when:
+        - assessor_run is defined
+        - assessor_run.rc is defined
+        - assessor_run.rc != 0
+
+    - name: "CIS-CAT | Clean up logs older than 90 days"
+      ansible.builtin.find:
+        paths: "{{ assessor_log_base }}"
+        age: "90d"
+        recurse: false
+        file_type: directory
+      register: old_logs
+
+    - name: "CIS-CAT | Remove old log directories"
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: old_logs.files | length > 0
