@@ -9,9 +9,41 @@
     assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
     assessor_script: "{{ assessor_dir }}/run_assessor.sh"
     assessor_log_base: "{{ assessor_dir }}/logs"
-    targets_config: "{{ assessor_dir }}/../config/assessor_targets.conf"
+
+    # ---------------------------------------------------------------
+    # targets_config — injected via AWX Survey at launch time.
+    # Each Job Template (Windows, Linux-Group-1, Linux-Group-2, etc.)
+    # passes its own targets file, allowing independent schedules.
+    #
+    # Survey variable name : targets_config
+    # Survey question label: "Targets configuration file"
+    # Survey default value : (see per-template awx_job_template_*.yml)
+    #
+    # The default below is a safety fallback only; it should always
+    # be overridden by the survey when launching via AWX.
+    # ---------------------------------------------------------------
+    targets_config: >-
+      {{ survey_targets_config
+         | default(assessor_dir + '/config/targets_windows.conf') }}
 
   tasks:
+    - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/run_assessor.sh"
+        dest: "{{ assessor_dir }}/run_assessor.sh"
+        mode: "0750"
+
+    - name: "CIS-CAT | Validate targets_config was supplied"
+      ansible.builtin.fail:
+        msg: >-
+          No targets_config was provided. Set it as an AWX Survey parameter
+          (variable name: survey_targets_config) on the Job Template, or pass
+          it as an extra variable at launch time.
+      when: targets_config | length == 0
+
+    - name: "CIS-CAT | Show active targets file"
+      ansible.builtin.debug:
+        msg: "Using targets config: {{ targets_config }}"
 
     - name: "CIS-CAT | Verify Assessor-CLI.sh exists"
       ansible.builtin.stat:
@@ -62,6 +94,8 @@
         executable: /bin/bash
       environment:
         ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout }}"
+        # Consumed by run_assessor.sh — tells it which targets file to load
+        TARGETS_CONFIG: "{{ targets_config }}"
       register: assessor_run
       async: 7200
       poll: 30
