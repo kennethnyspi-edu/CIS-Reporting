@@ -6,6 +6,7 @@
 
   vars:
     # Path inside the AWX pod — matches project mount
+    awx_project_dir: "/var/lib/awx/projects/_87__cis_assessor_reporting"
     assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
     assessor_script: "{{ assessor_dir }}/run_assessor.sh"
     assessor_log_base: "{{ assessor_dir }}/logs"
@@ -29,8 +30,9 @@
   tasks:
     - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../scripts/run_assessor.sh"
+        src: "{{ playbook_dir }}/scripts/run_assessor.sh"
         dest: "{{ assessor_dir }}/run_assessor.sh"
+        remote_src: true  
         mode: "0750"
 
     - name: "CIS-CAT | Validate targets_config was supplied"
