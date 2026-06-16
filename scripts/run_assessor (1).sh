@@ -7,7 +7,11 @@
 # Deploy path:    /var/lib/awx/projects/cis_assessor/Assessor/run_assessor.sh
 #
 # Environment variables (injected by Ansible playbook):
-#   ASSESSOR_ENCRYPT_PASSWORD  — report encryption password (required)
+#   ASSESSOR_ENCRYPT_PASSWORD  — report encryption password (required only
+#                                when USE_ENCRIPTED_FILE=TRUE)
+#   USE_ENCRIPTED_FILE         — TRUE  -> run with -fp <password> (encrypted report)
+#                                FALSE -> run without -fp (plain/unencrypted report)
+#                                defaults to TRUE if unset
 #   TARGETS_CONFIG             — full path to the targets .conf file (optional;
 #                                falls back to CONFIG_DIR/assessor_targets.conf)
 #
@@ -34,7 +38,16 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="${ASSESSOR_DIR}/logs/assessor_${TIMESTAMP}"
 REPORT_FILE="${LOG_DIR}/assessor_summary_${TIMESTAMP}.txt"
 
+# ── Encryption mode ──────────────────────────────────────────────────────
+# USE_ENCRIPTED_FILE controls whether the Assessor is run with -fp (encrypted
+# report) or without it (plain report). Defaults to TRUE (encrypted) when
+# unset, to preserve existing behavior unless explicitly overridden.
+USE_ENCRIPTED_FILE="${USE_ENCRIPTED_FILE:-TRUE}"
+# Normalize to uppercase so true/True/TRUE all work the same way
+USE_ENCRIPTED_FILE="$(echo "$USE_ENCRIPTED_FILE" | tr '[:lower:]' '[:upper:]')"
+
 # ── Password ──────────────────────────────────────────────────────────────
+# Only required when running in encrypted mode (USE_ENCRIPTED_FILE=TRUE).
 # Prefer env var (injected by AWX custom credential).
 # Fall back to the protected file for standalone/manual runs.
 #
@@ -42,7 +55,11 @@ REPORT_FILE="${LOG_DIR}/assessor_summary_${TIMESTAMP}.txt"
 #   echo -n 'yourpassword' > config/.assessor_pass
 #   chmod 640 config/.assessor_pass
 #   chown root:1000 config/.assessor_pass
-ENCRYPT_PASSWORD="${ASSESSOR_ENCRYPT_PASSWORD:-$(cat "${ASSESSOR_DIR}/config/.assessor_pass" 2>/dev/null)}"
+if [ "$USE_ENCRIPTED_FILE" = "TRUE" ]; then
+  ENCRYPT_PASSWORD="${ASSESSOR_ENCRYPT_PASSWORD:-$(cat "${ASSESSOR_DIR}/config/.assessor_pass" 2>/dev/null)}"
+else
+  ENCRYPT_PASSWORD=""
+fi
 
 # ── Java runtime ──────────────────────────────────────────────────────────
 export JAVA_HOME="${ASSESSOR_DIR}/jre"
@@ -74,6 +91,7 @@ echo " CIS-CAT Pro Assessor — Monthly Run"     | tee -a "$REPORT_FILE"
 echo " Started:      $(date)"                   | tee -a "$REPORT_FILE"
 echo " Assessor dir: $ASSESSOR_DIR"             | tee -a "$REPORT_FILE"
 echo " Targets file: $TARGETS_FILE"             | tee -a "$REPORT_FILE"
+echo " Encrypted:    $USE_ENCRIPTED_FILE"       | tee -a "$REPORT_FILE"
 echo " Log dir:      $LOG_DIR"                  | tee -a "$REPORT_FILE"
 echo "========================================" | tee -a "$REPORT_FILE"
 
@@ -93,10 +111,11 @@ if [ ! -f "${ASSESSOR_DIR}/jre/bin/java" ]; then
   exit 1
 fi
 
-if [ -z "$ENCRYPT_PASSWORD" ]; then
+if [ "$USE_ENCRIPTED_FILE" = "TRUE" ] && [ -z "$ENCRYPT_PASSWORD" ]; then
   echo "❌ FATAL: No encryption password available."
   echo "   Set ASSESSOR_ENCRYPT_PASSWORD env var, or create:"
   echo "   ${ASSESSOR_DIR}/config/.assessor_pass"
+  echo "   (Or set USE_ENCRIPTED_FILE=FALSE to run without encryption)"
   exit 1
 fi
 
@@ -143,12 +162,21 @@ for target_line in "${TARGET_LINES[@]}"; do
 
   log_info "Starting at $(date)"
 
-  # Run the Assessor
-  bash "$ASSESSOR_CLI" \
-    -v \
-    -cfg "$CONFIG_PATH" \
-    -fp "$ENCRYPT_PASSWORD" \
-    > "$TARGET_LOG" 2>&1
+  # Build the Assessor command — only add -fp when running in encrypted mode
+  if [ "$USE_ENCRIPTED_FILE" = "TRUE" ]; then
+    log_info "Mode:    encrypted (-fp)"
+    bash "$ASSESSOR_CLI" \
+      -v \
+      -cfg "$CONFIG_PATH" \
+      -fp "$ENCRYPT_PASSWORD" \
+      > "$TARGET_LOG" 2>&1
+  else
+    log_info "Mode:    plain (no -fp)"
+    bash "$ASSESSOR_CLI" \
+      -v \
+      -cfg "$CONFIG_PATH" \
+      > "$TARGET_LOG" 2>&1
+  fi
 
   EXIT_CODE=$?
   log_info "Finished at $(date) — exit code: $EXIT_CODE"
@@ -180,6 +208,7 @@ done
 # ── Final summary ─────────────────────────────────────────────────────────
 log_section "SUMMARY"
 echo "  Targets file : $TARGETS_FILE"  | tee -a "$REPORT_FILE"
+echo "  Encrypted    : $USE_ENCRIPTED_FILE" | tee -a "$REPORT_FILE"
 echo "  Total        : $TOTAL"         | tee -a "$REPORT_FILE"
 echo "  ✅ Passed    : $PASS_COUNT"    | tee -a "$REPORT_FILE"
 echo "  ❌ Failed    : $FAIL_COUNT"    | tee -a "$REPORT_FILE"
