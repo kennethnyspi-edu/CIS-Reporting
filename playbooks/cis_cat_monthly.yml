@@ -60,7 +60,7 @@
         executable: /bin/bash
       register: assessor_password
       changed_when: false
-      no_log: true
+      #no_log: true
 
     - name: "CIS-CAT | Verify targets config exists"
       ansible.builtin.stat:
