@@ -7,14 +7,17 @@
   vars:
     # Path inside the AWX pod — matches project mount
     assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
+    assessor_script: "{{ assessor_dir }}/run_assessor.sh"
     assessor_log_base: "{{ assessor_dir }}/logs"
 
-    # AWX Runner mounts this Git project at a fixed path on the AWX node.
-    # We use this to locate scripts/ without relying on playbook_dir,
-    # which Runner resolves to /runner/project/playbooks (inside the
-    # ephemeral container) rather than the actual project mount on disk.
+    # AWX mounts this Git project at a fixed path on the AWX node, but
+    # AWX prefixes the folder with the internal Project ID (e.g. "_87_"),
+    # so it will NOT match the project's display name or repo name.
+    # Verify the real path with:
+    #   ls /var/lib/awx/projects/ | grep -i <some part of your repo name>
+    # and update this value if the Project is ever deleted/recreated
+    # (the ID, and therefore this path, will change).
     awx_project_dir: "/var/lib/awx/projects/_87__cis_assessor_reporting"
-    assessor_script: "{{ assessor_dir }}/run_assessor.sh"
 
     # ---------------------------------------------------------------
     # targets_config — injected via AWX Survey at launch time.
@@ -34,15 +37,29 @@
 
   tasks:
 
+    - name: "CIS-CAT | Verify Git project source script exists"
+      ansible.builtin.stat:
+        path: "{{ awx_project_dir }}/scripts/run_assessor.sh"
+      register: source_script_stat
+      failed_when: not source_script_stat.stat.exists
+      # If this fails, awx_project_dir almost certainly does not match
+      # the real AWX project mount path. AWX prefixes project folders
+      # with the internal Project ID (e.g. "_87_<repo-name>"), and that
+      # ID changes if the Project is ever deleted and recreated.
+      # Run on the AWX node: ls /var/lib/awx/projects/ | grep -i <repo-name>
+
     - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
       ansible.builtin.copy:
         src: "{{ awx_project_dir }}/scripts/run_assessor.sh"
         dest: "{{ assessor_dir }}/run_assessor.sh"
         mode: "0750"
-        owner: root
-        group: "1000"
         remote_src: true
-      become: true
+      # No 'become' here: the AWX execution environment has no sudo
+      # binary, and the job already runs as whatever user owns the
+      # project/assessor mounts (no privilege escalation needed).
+      # Dropped explicit owner/group for the same reason -- chown
+      # would also require escalation. The existing file ownership
+      # on assessor_dir is preserved; only the mode is set.
 
     - name: "CIS-CAT | Validate targets_config was supplied"
       ansible.builtin.fail:
@@ -109,14 +126,14 @@
         cmd: "{{ assessor_script }}"
         executable: /bin/bash
       environment:
-        #ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
+        ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
         # Consumed by run_assessor.sh — tells it which targets file to load
         TARGETS_CONFIG: "{{ targets_config }}"
       register: assessor_run
       async: 7200
       poll: 30
       ignore_errors: true
-      #no_log: false
+      no_log: false
 
     - name: "CIS-CAT | Print assessment output"
       ansible.builtin.debug:
