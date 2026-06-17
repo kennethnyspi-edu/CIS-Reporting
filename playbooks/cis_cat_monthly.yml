@@ -7,14 +7,14 @@
   vars:
     # Path inside the AWX pod — matches project mount
     assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
-    assessor_script: "{{ assessor_dir }}/run_assessor.sh"
     assessor_log_base: "{{ assessor_dir }}/logs"
 
     # AWX Runner mounts this Git project at a fixed path on the AWX node.
     # We use this to locate scripts/ without relying on playbook_dir,
     # which Runner resolves to /runner/project/playbooks (inside the
     # ephemeral container) rather than the actual project mount on disk.
-    awx_project_dir: "/var/lib/awx/projects/cis-cat-awx"
+    awx_project_dir: "/var/lib/awx/projects/_87__cis_assessor_reporting"
+    assessor_script: "{{ awx_project_dir }}/run_assessor.sh"
 
     # ---------------------------------------------------------------
     # targets_config — injected via AWX Survey at launch time.
