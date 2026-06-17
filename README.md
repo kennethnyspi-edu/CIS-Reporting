@@ -37,9 +37,23 @@ scripts/run_assessor.sh        →     /var/lib/awx/projects/cis_assessor/
    every Job Template run)
 
 config/targets_*.conf                /var/lib/awx/projects/cis_assessor/
-  (read directly from the      →     Assessor/../config/targets_*.conf
+  (read directly from the      →     Assessor/config/targets_*.conf
    AWX project mount)                (path injected via AWX survey)
 ```
+
+> ⚠️ **`awx_project_dir` must match the real on-disk folder, not the Project's display name.**
+> AWX mounts every Project under `/var/lib/awx/projects/` using an internal,
+> auto-generated folder name — typically `_<project_id>__<repo_name>` (e.g.
+> `_87__cis_assessor_reporting`) — which does **not** match what you typed
+> as the Project name in the AWX UI. Verify the actual path with:
+> ```
+> ls /var/lib/awx/projects/ | grep -i <part of your repo name>
+> ```
+> and set `awx_project_dir` in `playbooks/cis_cat_monthly.yml` to match exactly.
+> This ID changes if the Project is ever deleted and recreated, so re-verify
+> after doing so. A mismatch here causes the `Verify Git project source
+> script exists` task to fail with a clear error — if you don't see that
+> task fail, the path is correct.
 
 ---
 
@@ -73,9 +87,9 @@ In AWX → **Projects → Add**:
 Edit the appropriate `config/targets_*.conf` file and add one pipe-delimited line per target:
 
 ```
-# <config_xml>|<label>|<profile>
-targets_ubuntu22_prod.xml|web-prod-01|Level 1 - Server
-targets_win2022.xml|dc01|Level 1 - Domain Controller
+# <config_xml>|<label>|<profile>|<boolean_encrypted>
+targets_ubuntu22_prod.xml|web-prod-01|Level 1 - Server|TRUE
+targets_win2022.xml|dc01|Level 1 - Domain Controller|FALSE
 ```
 
 Commit and push the change — AWX pulls the latest on each run.
