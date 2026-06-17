@@ -109,14 +109,14 @@
         cmd: "{{ assessor_script }}"
         executable: /bin/bash
       environment:
-        ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
+        #ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
         # Consumed by run_assessor.sh — tells it which targets file to load
         TARGETS_CONFIG: "{{ targets_config }}"
       register: assessor_run
       async: 7200
       poll: 30
       ignore_errors: true
-      no_log: false
+      #no_log: false
 
     - name: "CIS-CAT | Print assessment output"
       ansible.builtin.debug:
