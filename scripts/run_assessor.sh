@@ -12,6 +12,10 @@
 #                                in TARGETS_FILE has <boolean_encrypted>=TRUE.
 #   TARGETS_CONFIG             — full path to the targets .conf file (optional;
 #                                falls back to CONFIG_DIR/assessor_targets.conf)
+#   PER_TARGET_TIMEOUT_SECONDS — max seconds to wait for a single target's
+#                                Assessor-CLI run before killing it and
+#                                moving on to the next target. Defaults to
+#                                1800 (30 minutes) if unset.
 #
 # Each targets file line format (pipe-delimited, 4 fields):
 #   <config_xml>|<label>|<profile>|<boolean_encrypted>
@@ -36,6 +40,16 @@ CONFIG_DIR="${ASSESSOR_DIR}/config"
 # Prefer TARGETS_CONFIG injected by the Ansible playbook (survey-driven).
 # Fall back to the legacy default so the script works standalone too.
 TARGETS_FILE="${TARGETS_CONFIG:-${CONFIG_DIR}/assessor_targets.conf}"
+
+# ── Per-target timeout ───────────────────────────────────────────────────
+# Caps how long Assessor-CLI is allowed to run against a single target
+# before being killed, so one unreachable/hanging host (e.g. a WinRM
+# connection that never completes) doesn't block the rest of the run.
+# Defaults to 1800s (30 min) if unset or non-numeric.
+PER_TARGET_TIMEOUT_SECONDS="${PER_TARGET_TIMEOUT_SECONDS:-1800}"
+if ! [[ "$PER_TARGET_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
+  PER_TARGET_TIMEOUT_SECONDS=1800
+fi
 
 # ── Timestamp & logging ───────────────────────────────────────────────────
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -85,6 +99,7 @@ echo " CIS-CAT Pro Assessor — Monthly Run"     | tee -a "$REPORT_FILE"
 echo " Started:      $(date)"                   | tee -a "$REPORT_FILE"
 echo " Assessor dir: $ASSESSOR_DIR"             | tee -a "$REPORT_FILE"
 echo " Targets file: $TARGETS_FILE"             | tee -a "$REPORT_FILE"
+echo " Per-target timeout: ${PER_TARGET_TIMEOUT_SECONDS}s" | tee -a "$REPORT_FILE"
 echo " Log dir:      $LOG_DIR"                  | tee -a "$REPORT_FILE"
 echo "========================================" | tee -a "$REPORT_FILE"
 
@@ -101,6 +116,14 @@ fi
 
 if [ ! -f "${ASSESSOR_DIR}/jre/bin/java" ]; then
   echo "❌ FATAL: Bundled JRE not found at ${ASSESSOR_DIR}/jre/bin/java"
+  exit 1
+fi
+
+if ! command -v timeout > /dev/null 2>&1; then
+  echo "❌ FATAL: 'timeout' command not found (coreutils)."
+  echo "   Per-target timeout enforcement requires it. Install coreutils"
+  echo "   in the AWX execution environment, or remove the timeout wrapper"
+  echo "   from this script if running unbounded is acceptable."
   exit 1
 fi
 
@@ -173,17 +196,25 @@ for target_line in "${TARGET_LINES[@]}"; do
 
   log_info "Starting at $(date)"
 
-  # Build the Assessor command — only add -fp when this target is encrypted
+  # Build the Assessor command — only add -fp when this target is encrypted.
+  # Wrapped with `timeout` so a hung/unreachable host (e.g. WinRM never
+  # completing the handshake) doesn't block the rest of the targets list.
+  # --kill-after gives a 30s grace period: timeout sends SIGTERM first,
+  # then SIGKILL if the process (or any child Java process) ignores it.
   if [ "$encrypted_flag" = "TRUE" ]; then
     log_info "Mode:      encrypted (-fp)"
-    bash "$ASSESSOR_CLI" \
+    log_info "Timeout:   ${PER_TARGET_TIMEOUT_SECONDS}s"
+    timeout --kill-after=30 "${PER_TARGET_TIMEOUT_SECONDS}s" \
+      bash "$ASSESSOR_CLI" \
       -v \
       -cfg "$CONFIG_PATH" \
       -fp "$ENCRYPT_PASSWORD" \
       > "$TARGET_LOG" 2>&1
   else
     log_info "Mode:      plain (no -fp)"
-    bash "$ASSESSOR_CLI" \
+    log_info "Timeout:   ${PER_TARGET_TIMEOUT_SECONDS}s"
+    timeout --kill-after=30 "${PER_TARGET_TIMEOUT_SECONDS}s" \
+      bash "$ASSESSOR_CLI" \
       -v \
       -cfg "$CONFIG_PATH" \
       > "$TARGET_LOG" 2>&1
@@ -191,6 +222,12 @@ for target_line in "${TARGET_LINES[@]}"; do
 
   EXIT_CODE=$?
   log_info "Finished at $(date) — exit code: $EXIT_CODE"
+
+  # `timeout` exits 124 specifically when it had to kill the process for
+  # running past the deadline — distinguish that from a normal failure.
+  if [ "$EXIT_CODE" -eq 124 ]; then
+    echo "  ⏱️  TIMEOUT (>${PER_TARGET_TIMEOUT_SECONDS}s) for ${label}; process killed, continuing to next target" >> "$TARGET_LOG"
+  fi
 
   if [ $EXIT_CODE -eq 0 ]; then
     log_pass "$label assessment completed successfully"
@@ -207,7 +244,11 @@ for target_line in "${TARGET_LINES[@]}"; do
     log_info "Pass:      ${TOTAL_PASS}  |  Fail: ${TOTAL_FAIL}  |  Total rules: ${TOTAL_RESULTS}"
 
   else
-    log_fail "$label assessment FAILED — check $TARGET_LOG"
+    if [ "$EXIT_CODE" -eq 124 ]; then
+      log_fail "$label assessment TIMED OUT after ${PER_TARGET_TIMEOUT_SECONDS}s — process killed, check $TARGET_LOG"
+    else
+      log_fail "$label assessment FAILED — check $TARGET_LOG"
+    fi
     echo "  --- Last 10 lines of log ---" | tee -a "$REPORT_FILE"
     tail -10 "$TARGET_LOG" | while read -r line; do
       echo "  $line" | tee -a "$REPORT_FILE"
