@@ -14,7 +14,7 @@
     # which Runner resolves to /runner/project/playbooks (inside the
     # ephemeral container) rather than the actual project mount on disk.
     awx_project_dir: "/var/lib/awx/projects/_87__cis_assessor_reporting"
-    assessor_script: "{{ awx_project_dir }}/run_assessor.sh"
+    assessor_script: "{{ assessor_dir }}/run_assessor.sh"
 
     # ---------------------------------------------------------------
     # targets_config — injected via AWX Survey at launch time.
@@ -34,15 +34,15 @@
 
   tasks:
 
-  #  - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
-  #    ansible.builtin.copy:
-  #      src: "{{ awx_project_dir }}/scripts/run_assessor.sh"
-  #      dest: "{{ assessor_dir }}/run_assessor.sh"
-  #      mode: "0750"
-  #      owner: root
-  #      group: "1000"
-  #      remote_src: true
-  #    become: true
+    - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
+      ansible.builtin.copy:
+        src: "{{ awx_project_dir }}/scripts/run_assessor.sh"
+        dest: "{{ assessor_dir }}/run_assessor.sh"
+        mode: "0750"
+        owner: root
+        group: "1000"
+        remote_src: true
+      become: true
 
     - name: "CIS-CAT | Validate targets_config was supplied"
       ansible.builtin.fail:
