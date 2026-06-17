@@ -6,19 +6,24 @@
 
   vars:
     # Path inside the AWX pod — matches project mount
-    awx_project_dir: "/var/lib/awx/projects/_87__cis_assessor_reporting"
     assessor_dir: "/var/lib/awx/projects/cis_assessor/Assessor"
     assessor_script: "{{ assessor_dir }}/run_assessor.sh"
     assessor_log_base: "{{ assessor_dir }}/logs"
+
+    # AWX Runner mounts this Git project at a fixed path on the AWX node.
+    # We use this to locate scripts/ without relying on playbook_dir,
+    # which Runner resolves to /runner/project/playbooks (inside the
+    # ephemeral container) rather than the actual project mount on disk.
+    awx_project_dir: "/var/lib/awx/projects/cis-cat-awx"
 
     # ---------------------------------------------------------------
     # targets_config — injected via AWX Survey at launch time.
     # Each Job Template (Windows, Linux-Group-1, Linux-Group-2, etc.)
     # passes its own targets file, allowing independent schedules.
     #
-    # Survey variable name : targets_config
+    # Survey variable name : survey_targets_config
     # Survey question label: "Targets configuration file"
-    # Survey default value : (see per-template awx_job_template_*.yml)
+    # Survey default value : (see per-template awx_job_template.yml)
     #
     # The default below is a safety fallback only; it should always
     # be overridden by the survey when launching via AWX.
@@ -28,12 +33,16 @@
          | default(assessor_dir + '/config/targets_windows.conf') }}
 
   tasks:
-#    - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
-#      ansible.builtin.copy:
-#        src: "{{ playbook_dir }}/scripts/run_assessor.sh"
-#        dest: "{{ assessor_dir }}/run_assessor.sh"
-#        remote_src: true  
-#        mode: "0750"
+
+    - name: "CIS-CAT | Deploy run_assessor.sh from Git project"
+      ansible.builtin.copy:
+        src: "{{ awx_project_dir }}/scripts/run_assessor.sh"
+        dest: "{{ assessor_dir }}/run_assessor.sh"
+        mode: "0750"
+        owner: root
+        group: "1000"
+        remote_src: true
+      become: true
 
     - name: "CIS-CAT | Validate targets_config was supplied"
       ansible.builtin.fail:
@@ -60,7 +69,12 @@
         executable: /bin/bash
       register: assessor_password
       changed_when: false
-      #no_log: true
+      failed_when: false
+      no_log: true
+      # Whether this password is actually needed depends on the per-line
+      # <boolean_encrypted> flags inside the targets file, which run_assessor.sh
+      # parses at runtime. We always attempt to read it here; if no target
+      # requires encryption, the script simply won't use it.
 
     - name: "CIS-CAT | Verify targets config exists"
       ansible.builtin.stat:
@@ -95,7 +109,7 @@
         cmd: "{{ assessor_script }}"
         executable: /bin/bash
       environment:
-        ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout }}"
+        ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
         # Consumed by run_assessor.sh — tells it which targets file to load
         TARGETS_CONFIG: "{{ targets_config }}"
       register: assessor_run
