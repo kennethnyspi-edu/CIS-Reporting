@@ -35,6 +35,18 @@
       {{ survey_targets_config
          | default(assessor_dir + '/config/targets_windows.conf') }}
 
+    # ---------------------------------------------------------------
+    # per_target_timeout_seconds — optional AWX Survey override.
+    # Caps how long Assessor-CLI may run against a single target before
+    # being killed, so one hung/unreachable host doesn't block the rest
+    # of the targets list. Passed through to run_assessor.sh, which
+    # itself defaults to 1800 (30 min) if this isn't set at all.
+    #
+    # Survey variable name : survey_per_target_timeout_seconds
+    # ---------------------------------------------------------------
+    per_target_timeout_seconds: >-
+      {{ survey_per_target_timeout_seconds | default('1800') }}
+
   tasks:
 
     - name: "CIS-CAT | Verify Git project source script exists"
@@ -129,6 +141,8 @@
         ASSESSOR_ENCRYPT_PASSWORD: "{{ assessor_password.stdout | default('') }}"
         # Consumed by run_assessor.sh — tells it which targets file to load
         TARGETS_CONFIG: "{{ targets_config }}"
+        # Consumed by run_assessor.sh — caps per-target Assessor-CLI runtime
+        PER_TARGET_TIMEOUT_SECONDS: "{{ per_target_timeout_seconds }}"
       register: assessor_run
       async: 7200
       poll: 30
