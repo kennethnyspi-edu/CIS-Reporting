@@ -47,6 +47,24 @@
     per_target_timeout_seconds: >-
       {{ survey_per_target_timeout_seconds | default('1800') }}
 
+    # ---------------------------------------------------------------
+    # Email reporting — optional AWX Survey overrides.
+    # send_email defaults to false so existing Job Templates keep their
+    # current behavior unless explicitly opted in via the survey.
+    #
+    # Survey variable names:
+    #   survey_send_email   (boolean / multiplechoice TRUE|FALSE)
+    #   survey_mail_to      (text, comma-separated if multiple addresses)
+    #   survey_mail_cc      (text, optional)
+    # ---------------------------------------------------------------
+    send_email: "{{ survey_send_email | default(false) | bool }}"
+    mail_from: "cis-cat-assessor@nyspi.org"
+    mail_to: >-
+      {{ (survey_mail_to | default('') ).split(',') | map('trim') | select | list }}
+    mail_cc: >-
+      {{ (survey_mail_cc | default('') ).split(',') | map('trim') | select | list
+         if (survey_mail_cc | default('')) | length > 0 else omit }}
+
   tasks:
 
     - name: "CIS-CAT | Verify Git project source script exists"
@@ -174,16 +192,6 @@
         - assessor_run.msg is defined
         - "'assessor_encrypt_password' in assessor_run.msg"
 
-    - name: "CIS-CAT | Fail if assessments failed"
-      ansible.builtin.fail:
-        msg: >-
-          One or more assessments failed.
-          Check logs in {{ assessor_log_base }}
-      when:
-        - assessor_run is defined
-        - assessor_run.rc is defined
-        - assessor_run.rc != 0
-
     - name: "CIS-CAT | Clean up logs older than 90 days"
       ansible.builtin.find:
         paths: "{{ assessor_log_base }}"
@@ -198,3 +206,23 @@
         state: absent
       loop: "{{ old_logs.files }}"
       when: old_logs.files | length > 0
+
+    - name: "CIS-CAT | Generate and email run report"
+      ansible.builtin.include_tasks: "{{ awx_project_dir }}/playbooks/report.yml"
+      # Runs regardless of whether individual targets passed or failed,
+      # so a partial-failure run still gets reported. Only skipped if
+      # the assessor run itself never produced output at all (e.g. it
+      # failed before writing any JSON summary -- report.yml's own
+      # "Fail clearly if no JSON summary was found" task handles that
+      # case explicitly rather than silently skipping).
+      when: assessor_run is defined
+
+    - name: "CIS-CAT | Fail if assessments failed"
+      ansible.builtin.fail:
+        msg: >-
+          One or more assessments failed.
+          Check logs in {{ assessor_log_base }}
+      when:
+        - assessor_run is defined
+        - assessor_run.rc is defined
+        - assessor_run.rc != 0
