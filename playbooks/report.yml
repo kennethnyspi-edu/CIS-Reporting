@@ -1,0 +1,178 @@
+---
+# report.yml — Renders and emails a summary of the CIS-CAT Pro Assessor run.
+# Included at the end of playbooks/cis_cat_monthly.yml, after the assessment
+# loop and log cleanup, regardless of whether individual targets failed
+# (so a partial-failure run still gets reported).
+#
+# Expects these facts/vars already set by the including playbook:
+#   assessor_log_base    — base logs directory (parent of each run's LOG_DIR)
+#   awx_project_dir       — path to this Git project on the AWX node
+#                           (used to locate templates/report.html.j2)
+#   send_email             — bool, whether to actually send the email
+#   mail_from, mail_to      — required if send_email is true
+#   mail_cc, smtp_host,
+#   smtp_port, smtp_secure,
+#   smtp_username, smtp_password — optional SMTP overrides (sensible
+#                           defaults are applied below for the NYSPI relay)
+
+- name: "CIS-CAT Report | Locate most recent JSON summary for this run"
+  ansible.builtin.find:
+    paths: "{{ assessor_log_base }}"
+    patterns: "assessor_summary_*.json"
+    recurse: true
+    age: "-1h"
+  register: json_summary_find
+
+- name: "CIS-CAT Report | Fail clearly if no JSON summary was found"
+  ansible.builtin.fail:
+    msg: >-
+      No assessor_summary_*.json file found under {{ assessor_log_base }}
+      from the last hour. run_assessor.sh may have failed before writing
+      its summary, or assessor_log_base is misconfigured.
+  when: json_summary_find.files | length == 0
+
+- name: "CIS-CAT Report | Pick the newest JSON summary file"
+  ansible.builtin.set_fact:
+    json_summary_path: >-
+      {{ (json_summary_find.files | sort(attribute='mtime') | last).path }}
+
+- name: "CIS-CAT Report | Read and parse the JSON summary"
+  ansible.builtin.set_fact:
+    assessor_summary: "{{ lookup('file', json_summary_path) | from_json }}"
+
+- name: "CIS-CAT Report | Derive a friendly OS label for each result"
+  ansible.builtin.set_fact:
+    report_results: "{{ _derived }}"
+  vars:
+    # Matches against a short list of known profile-naming conventions
+    # (Windows_YYYY, ubuntuYYMM / ubuntu_YY_MM, RHEL/Red Hat N, CentOS N,
+    # generic *linux*) and falls back to the raw profile string untouched
+    # if nothing matches, or 'Unknown' if profile is empty (e.g. a skipped
+    # target with no profile recorded).
+    _derived: |-
+      {%- set out = [] -%}
+      {%- for item in assessor_summary.results -%}
+        {%- set p = (item.profile | default('')) -%}
+        {%- if p | regex_search('(?i)windows') -%}
+          {%- set ver = p | regex_search('(\d{4})') | default('', true) -%}
+          {%- set os_label = 'Windows Server ' + ver if ver else 'Windows' -%}
+        {%- elif p | regex_search('(?i)ubuntu') -%}
+          {%- set digits = p | regex_findall('\d') | join('') -%}
+          {%- set os_label = 'Ubuntu ' + (digits[:2] + '.' + digits[2:4] if digits | length >= 4 else p) -%}
+        {%- elif p | regex_search('(?i)rhel|red.?hat') -%}
+          {%- set ver = p | regex_search('(\d+)') | default('', true) -%}
+          {%- set os_label = 'RHEL ' + ver if ver else 'RHEL' -%}
+        {%- elif p | regex_search('(?i)centos') -%}
+          {%- set ver = p | regex_search('(\d+)') | default('', true) -%}
+          {%- set os_label = 'CentOS ' + ver if ver else 'CentOS' -%}
+        {%- elif p | regex_search('(?i)linux') -%}
+          {%- set os_label = 'Linux' -%}
+        {%- else -%}
+          {%- set os_label = p if p else 'Unknown' -%}
+        {%- endif -%}
+        {%- set _ = out.append(item | combine({'os_label': os_label})) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: "CIS-CAT Report | Assemble report data structure"
+  ansible.builtin.set_fact:
+    report:
+      targets_file: "{{ assessor_summary.targets_file }}"
+      run_started: "{{ assessor_summary.started }}"
+      run_finished: "{{ ansible_facts.date_time.iso8601 | default(lookup('pipe', 'date -Iseconds')) }}"
+      total: "{{ assessor_summary.total }}"
+      passed: "{{ assessor_summary.passed }}"
+      failed: "{{ assessor_summary.failed }}"
+      skipped: "{{ assessor_summary.skipped }}"
+      results: "{{ report_results }}"
+      log_dir: "{{ json_summary_path | dirname }}"
+      awx_job_id: "{{ tower_job_id | default(awx_job_id_var | default('local')) }}"
+      awx_job_url: "{{ tower_job_template_name | default('') }}"
+
+- name: "CIS-CAT Report | Render HTML report to file alongside the logs"
+  ansible.builtin.template:
+    src: "{{ awx_project_dir }}/templates/report.html.j2"
+    dest: "{{ json_summary_path | dirname }}/report.html"
+    mode: "0640"
+
+- name: "CIS-CAT Report | Render report to a variable for emailing"
+  ansible.builtin.set_fact:
+    rendered_html_report: "{{ lookup('template', awx_project_dir + '/templates/report.html.j2') }}"
+
+- name: "CIS-CAT Report | Check whether community.general.mail is available"
+  ansible.builtin.command: ansible-doc -t module community.general.mail
+  register: mail_module_check
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  become: false
+
+- name: "CIS-CAT Report | Email the report (community.general.mail path)"
+  community.general.mail:
+    host: "{{ smtp_host | default('smtp.nyspi.local') }}"
+    port: "{{ smtp_port | default(25) }}"
+    secure: "{{ smtp_secure | default('never') }}"
+    username: "{{ smtp_username | default(omit) }}"
+    password: "{{ smtp_password | default(omit) }}"
+    from: "{{ mail_from }}"
+    to: "{{ mail_to }}"
+    cc: "{{ mail_cc | default(omit) }}"
+    subject: >-
+      [CIS-CAT Assessor] {{ report.total }} systems —
+      {{ report.passed }} passed, {{ report.failed }} failed,
+      {{ report.skipped }} skipped
+    subtype: html
+    body: "{{ rendered_html_report }}"
+    charset: utf8
+  when:
+    - send_email | default(false) | bool
+    - mail_module_check.rc == 0
+  register: mail_module_send
+  # Never let an SMTP problem (DNS, connection refused, auth, timeout)
+  # abort the whole play -- fall through to sendmail instead.
+  # IMPORTANT: failed_when: false is NOT used here -- it suppresses the
+  # module's exception so thoroughly that the registered result has no
+  # usable failure marker at all (observed: {"failed_when_result": false,
+  # "failed_when_suppressed_exception": "(traceback unavailable)"}, no
+  # msg, nothing 'is failed' can detect). ignore_errors: true preserves
+  # mail_module_send.failed correctly while still letting the play
+  # continue, which the fallback task below depends on.
+  ignore_errors: true
+  delegate_to: localhost
+  become: false
+
+- name: "CIS-CAT Report | Email the report (sendmail fallback)"
+  ansible.builtin.shell:
+    cmd: |
+      cat <<'MAIL_EOF' | /usr/sbin/sendmail -t -oi
+      From: {{ mail_from }}
+      To: {{ mail_to | join(', ') if mail_to is sequence else mail_to }}
+      Subject: [CIS-CAT Assessor] {{ report.total }} systems — {{ report.passed }} passed, {{ report.failed }} failed, {{ report.skipped }} skipped
+      MIME-Version: 1.0
+      Content-Type: text/html; charset=utf-8
+      {{ rendered_html_report }}
+      MAIL_EOF
+    executable: /bin/bash
+  when:
+    - send_email | default(false) | bool
+    - mail_module_check.rc != 0 or (mail_module_send is defined and mail_module_send.failed | default(false))
+  register: sendmail_fallback_send
+  failed_when: false
+  changed_when: true
+
+- name: "CIS-CAT Report | Warn if email reporting was requested but neither path succeeded"
+  ansible.builtin.debug:
+    msg: >-
+      send_email was true but the report could not be emailed via
+      community.general.mail
+      ({{ mail_module_send.msg | default('module exception, see job output above') }}).
+      Sendmail fallback {{ 'also did not run successfully' if
+      (sendmail_fallback_send is defined and sendmail_fallback_send.rc | default(1) != 0)
+      else 'was attempted' }}.
+      The HTML report is still available at
+      {{ json_summary_path | dirname }}/report.html.
+  when:
+    - send_email | default(false) | bool
+    - mail_module_check.rc == 0
+    - mail_module_send is defined
+    - mail_module_send.failed | default(false)
