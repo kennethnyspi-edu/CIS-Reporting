@@ -89,15 +89,21 @@
       awx_job_id: "{{ tower_job_id | default(awx_job_id_var | default('local')) }}"
       awx_job_url: "{{ tower_job_template_name | default('') }}"
 
-- name: "CIS-CAT Report | Render HTML report to file alongside the logs"
-  ansible.builtin.template:
-    src: "{{ awx_project_dir }}/templates/report.html.j2"
-    dest: "{{ json_summary_path | dirname }}/report.html"
-    mode: "0640"
-
-- name: "CIS-CAT Report | Render report to a variable for emailing"
+- name: "CIS-CAT Report | Render report to a variable for emailing and disk write"
   ansible.builtin.set_fact:
     rendered_html_report: "{{ lookup('template', awx_project_dir + '/templates/report.html.j2') }}"
+  # lookup() resolves paths on the AWX node's actual filesystem, where
+  # awx_project_dir exists. ansible.builtin.template resolves its src
+  # on the Ansible controller side (inside the ephemeral /runner container
+  # under AWX Runner), which has no access to /var/lib/awx/projects/ --
+  # so we use lookup() to render and copy() with content: to write to disk,
+  # avoiding the controller-path resolution error entirely.
+
+- name: "CIS-CAT Report | Write rendered HTML report to disk alongside the logs"
+  ansible.builtin.copy:
+    content: "{{ rendered_html_report }}"
+    dest: "{{ json_summary_path | dirname }}/report.html"
+    mode: "0640"
 
 - name: "CIS-CAT Report | Check whether community.general.mail is available"
   ansible.builtin.command: ansible-doc -t module community.general.mail
@@ -109,7 +115,7 @@
 
 - name: "CIS-CAT Report | Email the report (community.general.mail path)"
   community.general.mail:
-    host: "{{ smtp_host | default('10.20.193.83') }}"
+    host: "{{ smtp_host | default('smtp.nyspi.local') }}"
     port: "{{ smtp_port | default(25) }}"
     secure: "{{ smtp_secure | default('never') }}"
     username: "{{ smtp_username | default(omit) }}"
