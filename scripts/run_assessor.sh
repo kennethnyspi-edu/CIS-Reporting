@@ -55,6 +55,7 @@ fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="${ASSESSOR_DIR}/logs/assessor_${TIMESTAMP}"
 REPORT_FILE="${LOG_DIR}/assessor_summary_${TIMESTAMP}.txt"
+JSON_REPORT_FILE="${LOG_DIR}/assessor_summary_${TIMESTAMP}.json"
 
 # ── Password ──────────────────────────────────────────────────────────────
 # Loaded once, up front. Whether it's actually *required* depends on whether
@@ -93,6 +94,24 @@ log_fail() { echo "  ❌ FAIL | $1" | tee -a "$REPORT_FILE"; ((FAIL_COUNT++)); }
 log_skip() { echo "  ⚠️  SKIP | $1" | tee -a "$REPORT_FILE"; ((SKIP_COUNT++)); }
 log_info() { echo "  ℹ️  INFO | $1" | tee -a "$REPORT_FILE"; }
 
+# ── JSON helpers ──────────────────────────────────────────────────────────
+# Minimal JSON string escaper (no jq dependency). Escapes backslash, double
+# quote, and control characters that would otherwise break the JSON output.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  printf '%s' "$s"
+}
+
+# Accumulates one JSON object per target as the loop runs; joined into a
+# JSON array at the very end. Declared as an array so each entry is a
+# self-contained, already-comma-free JSON object string.
+JSON_RESULTS=()
+
 # ── Header ────────────────────────────────────────────────────────────────
 echo "========================================" | tee -a "$REPORT_FILE"
 echo " CIS-CAT Pro Assessor — Monthly Run"     | tee -a "$REPORT_FILE"
@@ -101,6 +120,7 @@ echo " Assessor dir: $ASSESSOR_DIR"             | tee -a "$REPORT_FILE"
 echo " Targets file: $TARGETS_FILE"             | tee -a "$REPORT_FILE"
 echo " Per-target timeout: ${PER_TARGET_TIMEOUT_SECONDS}s" | tee -a "$REPORT_FILE"
 echo " Log dir:      $LOG_DIR"                  | tee -a "$REPORT_FILE"
+echo " JSON report:  $JSON_REPORT_FILE"         | tee -a "$REPORT_FILE"
 echo "========================================" | tee -a "$REPORT_FILE"
 
 # ── Prerequisite checks ───────────────────────────────────────────────────
@@ -186,11 +206,13 @@ for target_line in "${TARGET_LINES[@]}"; do
 
   if [ ! -f "$CONFIG_PATH" ]; then
     log_skip "Config file not found: $CONFIG_PATH"
+    JSON_RESULTS+=("{\"label\":\"$(json_escape "$label")\",\"profile\":\"$(json_escape "$profile")\",\"status\":\"skipped\",\"reason\":\"config_not_found\",\"score_pct\":null,\"score_earned\":null,\"score_max\":null,\"total_pass\":null,\"total_fail\":null,\"total_rules\":null}")
     continue
   fi
 
   if [ "$encrypted_flag" != "TRUE" ] && [ "$encrypted_flag" != "FALSE" ]; then
     log_skip "Invalid or missing <boolean_encrypted> value ('$encrypted_flag') — expected TRUE or FALSE"
+    JSON_RESULTS+=("{\"label\":\"$(json_escape "$label")\",\"profile\":\"$(json_escape "$profile")\",\"status\":\"skipped\",\"reason\":\"invalid_encrypted_flag\",\"score_pct\":null,\"score_earned\":null,\"score_max\":null,\"total_pass\":null,\"total_fail\":null,\"total_rules\":null}")
     continue
   fi
 
@@ -235,19 +257,25 @@ for target_line in "${TARGET_LINES[@]}"; do
     # Extract scoring summary from the assessment log
     SCORE_EARNED=$(grep "Score Earned:"        "$TARGET_LOG" | tail -1 | awk -F: '{print $2}' | tr -d ' \r')
     SCORE_MAX=$(grep "Maximum Available:"      "$TARGET_LOG" | tail -1 | awk -F: '{print $2}' | tr -d ' \r')
-    SCORE_PCT=$(grep "Total:" "$TARGET_LOG"    | grep "%" | tail -1 | awk '{print $2}' | tr -d ' \r')
+    SCORE_PCT=$(grep "Total:" "$TARGET_LOG"    | grep "%" | tail -1 | awk '{print $2}' | tr -d ' \r%')
     TOTAL_PASS=$(grep "Total Pass:"            "$TARGET_LOG" | tail -1 | awk -F: '{print $2}' | tr -d ' \r')
     TOTAL_FAIL=$(grep "Total Fail:"            "$TARGET_LOG" | tail -1 | awk -F: '{print $2}' | tr -d ' \r')
     TOTAL_RESULTS=$(grep "Total # of Results:" "$TARGET_LOG" | tail -1 | awk -F: '{print $2}' | tr -d ' \r')
 
-    log_info "Score:     ${SCORE_EARNED} / ${SCORE_MAX} (${SCORE_PCT})"
+    log_info "Score:     ${SCORE_EARNED} / ${SCORE_MAX} (${SCORE_PCT}%)"
     log_info "Pass:      ${TOTAL_PASS}  |  Fail: ${TOTAL_FAIL}  |  Total rules: ${TOTAL_RESULTS}"
+
+    # Numeric fields default to JSON null if extraction came up empty
+    # (e.g. log format changes, or a non-standard Assessor output)
+    JSON_RESULTS+=("{\"label\":\"$(json_escape "$label")\",\"profile\":\"$(json_escape "$profile")\",\"status\":\"passed\",\"reason\":null,\"score_pct\":${SCORE_PCT:-null},\"score_earned\":${SCORE_EARNED:-null},\"score_max\":${SCORE_MAX:-null},\"total_pass\":${TOTAL_PASS:-null},\"total_fail\":${TOTAL_FAIL:-null},\"total_rules\":${TOTAL_RESULTS:-null}}")
 
   else
     if [ "$EXIT_CODE" -eq 124 ]; then
       log_fail "$label assessment TIMED OUT after ${PER_TARGET_TIMEOUT_SECONDS}s — process killed, check $TARGET_LOG"
+      JSON_RESULTS+=("{\"label\":\"$(json_escape "$label")\",\"profile\":\"$(json_escape "$profile")\",\"status\":\"failed\",\"reason\":\"timeout\",\"score_pct\":null,\"score_earned\":null,\"score_max\":null,\"total_pass\":null,\"total_fail\":null,\"total_rules\":null}")
     else
       log_fail "$label assessment FAILED — check $TARGET_LOG"
+      JSON_RESULTS+=("{\"label\":\"$(json_escape "$label")\",\"profile\":\"$(json_escape "$profile")\",\"status\":\"failed\",\"reason\":\"assessor_error\",\"score_pct\":null,\"score_earned\":null,\"score_max\":null,\"total_pass\":null,\"total_fail\":null,\"total_rules\":null}")
     fi
     echo "  --- Last 10 lines of log ---" | tee -a "$REPORT_FILE"
     tail -10 "$TARGET_LOG" | while read -r line; do
@@ -266,5 +294,23 @@ echo "  ❌ Failed    : $FAIL_COUNT"    | tee -a "$REPORT_FILE"
 echo "  ⚠️  Skipped   : $SKIP_COUNT"   | tee -a "$REPORT_FILE"
 echo "  Completed    : $(date)"        | tee -a "$REPORT_FILE"
 echo "  Report       : $REPORT_FILE"   | tee -a "$REPORT_FILE"
+
+# ── JSON summary report ──────────────────────────────────────────────────
+# Machine-readable companion to the text report above, consumed by
+# playbooks/report.yml to build the HTML email summary/chart. Joining
+# JSON_RESULTS with commas is safe here since json_escape() guarantees
+# no unescaped quotes/backslashes inside any individual entry.
+RESULTS_JOINED=$(IFS=,; echo "${JSON_RESULTS[*]}")
+cat > "$JSON_REPORT_FILE" <<JSON_EOF
+{
+  "targets_file": "$(json_escape "$TARGETS_FILE")",
+  "started": "$(json_escape "$(date -Iseconds)")",
+  "total": $TOTAL,
+  "passed": $PASS_COUNT,
+  "failed": $FAIL_COUNT,
+  "skipped": $SKIP_COUNT,
+  "results": [${RESULTS_JOINED}]
+}
+JSON_EOF
 
 [ $FAIL_COUNT -gt 0 ] && exit 1 || exit 0
