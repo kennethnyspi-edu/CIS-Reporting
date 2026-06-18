@@ -1,0 +1,104 @@
+{# report.html.j2 — CIS-CAT Pro Assessor monthly run summary email #}
+{# Variables expected: report (dict, assembled in report.yml) #}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; background: #f4f5f7; margin: 0; padding: 0; }
+  .container { max-width: 760px; margin: 0 auto; padding: 24px; }
+  .card { background: #ffffff; border-radius: 8px; padding: 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  .subtitle { color: #6b7280; font-size: 13px; margin: 0 0 20px 0; }
+  .stats { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  .stats td { padding: 12px; text-align: center; border-radius: 6px; font-size: 14px; }
+  .stat-total   { background: #eef2ff; color: #3730a3; }
+  .stat-passed  { background: #ecfdf5; color: #047857; }
+  .stat-failed  { background: #fef2f2; color: #b91c1c; }
+  .stat-skipped { background: #fffbeb; color: #b45309; }
+  .stat-number  { font-size: 24px; font-weight: bold; display: block; }
+  table.results { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  table.results th { text-align: left; background: #f9fafb; color: #6b7280; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; }
+  table.results td { padding: 8px 10px; border-bottom: 1px solid #f1f1f4; vertical-align: middle; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-passed  { background: #ecfdf5; color: #047857; }
+  .badge-failed  { background: #fef2f2; color: #b91c1c; }
+  .badge-skipped { background: #fffbeb; color: #b45309; }
+  .score-bar-bg { background: #e5e7eb; border-radius: 4px; height: 8px; width: 100px; display: inline-block; vertical-align: middle; overflow: hidden; }
+  .score-bar-fill { height: 8px; display: block; }
+  .score-good { background: #10b981; }
+  .score-mid  { background: #f59e0b; }
+  .score-low  { background: #ef4444; }
+  .score-text { font-size: 12px; color: #374151; margin-left: 6px; }
+  .footer { color: #9ca3af; font-size: 12px; text-align: center; margin-top: 16px; }
+  .footer a { color: #6b7280; }
+  .meta-row { font-size: 12px; color: #6b7280; margin: 2px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="card">
+    <h1>CIS-CAT Pro Assessor — Monthly Run Summary</h1>
+    <p class="subtitle">Targets file: {{ report.targets_file }}</p>
+    <p class="meta-row">Run started: {{ report.run_started }}</p>
+    <p class="meta-row">Run finished: {{ report.run_finished }}</p>
+    {% if report.awx_job_url %}
+    <p class="meta-row">AWX Job: <a href="{{ report.awx_job_url }}">{{ report.awx_job_id }}</a></p>
+    {% else %}
+    <p class="meta-row">AWX Job ID: {{ report.awx_job_id }}</p>
+    {% endif %}
+
+    <table class="stats">
+      <tr>
+        <td class="stat-total"><span class="stat-number">{{ report.total }}</span>Total</td>
+        <td class="stat-passed"><span class="stat-number">{{ report.passed }}</span>Passed</td>
+        <td class="stat-failed"><span class="stat-number">{{ report.failed }}</span>Failed</td>
+        <td class="stat-skipped"><span class="stat-number">{{ report.skipped }}</span>Skipped</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h1 style="font-size:16px;">Results by Server</h1>
+    <table class="results">
+      <tr>
+        <th>Server</th>
+        <th>Operating System</th>
+        <th>Status</th>
+        <th>Score</th>
+      </tr>
+      {% for r in report.results %}
+      <tr>
+        <td>{{ r.label }}</td>
+        <td>{{ r.os_label }}</td>
+        <td>
+          {% if r.status == 'passed' %}
+          <span class="badge badge-passed">PASSED</span>
+          {% elif r.status == 'failed' %}
+          <span class="badge badge-failed">FAILED{% if r.reason == 'timeout' %} (timeout){% endif %}</span>
+          {% else %}
+          <span class="badge badge-skipped">SKIPPED</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if r.score_pct is not none %}
+          <span class="score-bar-bg"><span class="score-bar-fill {{ 'score-good' if r.score_pct >= 80 else ('score-mid' if r.score_pct >= 60 else 'score-low') }}" style="width: {{ r.score_pct }}%;"></span></span>
+          <span class="score-text">{{ r.score_pct }}% ({{ r.total_pass }}/{{ r.total_rules }})</span>
+          {% else %}
+          <span class="score-text">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <p class="footer">
+    Generated automatically by the CIS-CAT Pro Assessor AWX pipeline.<br>
+    Full logs and per-host reports: {{ report.log_dir }}
+  </p>
+
+</div>
+</body>
+</html>
