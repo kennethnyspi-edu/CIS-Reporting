@@ -109,7 +109,7 @@
 
 - name: "CIS-CAT Report | Email the report (community.general.mail path)"
   community.general.mail:
-    host: "{{ smtp_host | default('smtp.nyspi.local') }}"
+    host: "{{ smtp_host | default('10.20.193.83') }}"
     port: "{{ smtp_port | default(25) }}"
     secure: "{{ smtp_secure | default('never') }}"
     username: "{{ smtp_username | default(omit) }}"
