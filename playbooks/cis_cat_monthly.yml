@@ -31,6 +31,41 @@
     # The default below is a safety fallback only; it should always
     # be overridden by the survey when launching via AWX.
     # ---------------------------------------------------------------
+        # ---------------------------------------------------------------
+    # per_target_timeout_seconds — optional AWX Survey override.
+    # Caps how long Assessor-CLI may run against a single target before
+    # being killed, so one hung/unreachable host doesn't block the rest
+    # of the targets list. Passed through to run_assessor.sh, which
+    # itself defaults to 1800 (30 min) if this isn't set at all.
+    #
+    # Survey variable name : survey_per_target_timeout_seconds
+    # ---------------------------------------------------------------
+    per_target_timeout_seconds: >-
+      {{ survey_per_target_timeout_seconds | default('1800') }}
+
+    # ---------------------------------------------------------------
+    # Email reporting — optional AWX Survey overrides.
+    # send_email defaults to false so existing Job Templates keep their
+    # current behavior unless explicitly opted in via the survey.
+    #
+    # Survey variable names:
+    #   survey_send_email   (boolean / multiplechoice TRUE|FALSE)
+    #   survey_mail_to      (text, comma-separated if multiple addresses)
+    #   survey_mail_cc      (text, optional)
+    # ---------------------------------------------------------------
+    send_email: "{{ survey_send_email | default(false) | bool }}"
+    mail_from: "cis-cat-assessor@nyspi.org"
+    mail_to: >-
+      {{ (survey_mail_to | default('') ).split(',') | map('trim') | select | list }}
+    mail_cc: >-
+      {{ (survey_mail_cc | default('') ).split(',') | map('trim') | select | list
+         if (survey_mail_cc | default('')) | length > 0 else omit }}
+    # SMTP relay — use IP directly to avoid DNS resolution failures inside
+    # the AWX Runner container, which cannot resolve .nyspi.local hostnames.
+    smtp_host: "10.20.193.83"
+    smtp_port: 25
+    smtp_secure: "never"
+    
     targets_config: >-
       {{ survey_targets_config
          | default(assessor_dir + '/config/targets_windows.conf') }}
