@@ -20,25 +20,58 @@
     paths: "{{ assessor_log_base }}"
     patterns: "assessor_summary_*.json"
     recurse: true
-    age: "-1h"
+    age: "-25h"
   register: json_summary_find
 
-- name: "CIS-CAT Report | Fail clearly if no JSON summary was found"
-  ansible.builtin.fail:
-    msg: >-
-      No assessor_summary_*.json file found under {{ assessor_log_base }}
-      from the last hour. run_assessor.sh may have failed before writing
-      its summary, or assessor_log_base is misconfigured.
+- name: "CIS-CAT Report | Locate most recent text summary (fallback for killed/timed-out runs)"
+  ansible.builtin.find:
+    paths: "{{ assessor_log_base }}"
+    patterns: "assessor_summary_*.txt"
+    recurse: true
+    age: "-25h"
+  register: txt_summary_find
+
+- name: "CIS-CAT Report | Build synthetic summary when JSON is missing (AWX async timeout mid-run)"
+  # When AWX kills run_assessor.sh before it completes the final summary
+  # block, no JSON file is written. We build a minimal report object so
+  # the email task still runs and communicates what happened, rather than
+  # failing silently with no notification at all.
+  ansible.builtin.set_fact:
+    assessor_summary:
+      targets_file: "{{ targets_config }}"
+      started: "{{ ansible_facts.date_time.iso8601 }}"
+      total: 0
+      passed: 0
+      failed: 0
+      skipped: 0
+      results: []
+    json_summary_path: >-
+      {{ (txt_summary_find.files | sort(attribute='mtime') | last).path
+         if txt_summary_find.files | length > 0
+         else assessor_log_base + '/unknown_run/assessor_summary_incomplete.txt' }}
+    report_incomplete: true
   when: json_summary_find.files | length == 0
+
+- name: "CIS-CAT Report | Warn that report is incomplete due to mid-run timeout"
+  ansible.builtin.debug:
+    msg: >-
+      No completed JSON summary found — run_assessor.sh was likely killed by
+      the AWX async timeout before it finished. A partial report will be
+      emailed. Increase awx_async_timeout_seconds (current: {{ awx_async_timeout_seconds }}s)
+      or reduce the number of targets per Job Template to avoid this.
+      Text summary (if any): {{ json_summary_path }}
+  when: report_incomplete | default(false)
 
 - name: "CIS-CAT Report | Pick the newest JSON summary file"
   ansible.builtin.set_fact:
     json_summary_path: >-
       {{ (json_summary_find.files | sort(attribute='mtime') | last).path }}
+  when: json_summary_find.files | length > 0
 
 - name: "CIS-CAT Report | Read and parse the JSON summary"
   ansible.builtin.set_fact:
     assessor_summary: "{{ lookup('file', json_summary_path) | from_json }}"
+  when: json_summary_find.files | length > 0
 
 - name: "CIS-CAT Report | Derive a friendly OS label for each result"
   ansible.builtin.set_fact:
@@ -88,6 +121,8 @@
       log_dir: "{{ json_summary_path | dirname }}"
       awx_job_id: "{{ tower_job_id | default(awx_job_id_var | default('local')) }}"
       awx_job_url: "{{ tower_job_template_name | default('') }}"
+      incomplete: "{{ report_incomplete | default(false) }}"
+      awx_async_timeout_seconds: "{{ awx_async_timeout_seconds }}"
 
 - name: "CIS-CAT Report | Render report to a variable for emailing and disk write"
   ansible.builtin.set_fact:
@@ -124,7 +159,8 @@
     to: "{{ mail_to }}"
     cc: "{{ mail_cc | default(omit) }}"
     subject: >-
-      [CIS-CAT Assessor] {{ report.total }} systems —
+      [CIS-CAT Assessor]{% if report.incomplete | default(false) %} ⚠️ INCOMPLETE RUN —{% endif %}
+      {{ report.total }} systems —
       {{ report.passed }} passed, {{ report.failed }} failed,
       {{ report.skipped }} skipped
     subtype: html
@@ -153,7 +189,7 @@
       cat <<'MAIL_EOF' | /usr/sbin/sendmail -t -oi
       From: {{ mail_from }}
       To: {{ mail_to | join(', ') if mail_to is sequence else mail_to }}
-      Subject: [CIS-CAT Assessor] {{ report.total }} systems — {{ report.passed }} passed, {{ report.failed }} failed, {{ report.skipped }} skipped
+      Subject: [CIS-CAT Assessor]{% if report.incomplete | default(false) %} INCOMPLETE RUN —{% endif %} {{ report.total }} systems — {{ report.passed }} passed, {{ report.failed }} failed, {{ report.skipped }} skipped
       MIME-Version: 1.0
       Content-Type: text/html; charset=utf-8
       {{ rendered_html_report }}

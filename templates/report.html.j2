@@ -38,6 +38,19 @@
 <body>
 <div class="container">
 
+  {% if report.incomplete | default(false) %}
+  <div class="card" style="background:#fff7ed; border-left: 4px solid #f97316;">
+    <h1 style="font-size:16px; color:#c2410c;">⚠️ Incomplete Run — AWX Async Timeout Reached</h1>
+    <p style="color:#9a3412; font-size:13px; margin:4px 0;">
+      The assessment was cut short by the AWX async timeout
+      ({{ report.awx_async_timeout_seconds }}s) before all targets completed.
+      The results below reflect only the targets that finished before the timeout.
+      Increase <strong>awx_async_timeout_seconds</strong> on the Job Template survey,
+      or split your targets across multiple Job Templates to avoid this.
+    </p>
+  </div>
+  {% endif %}
+
   <div class="card">
     <h1>CIS-CAT Pro Assessor — Monthly Run Summary</h1>
     <p class="subtitle">Targets file: {{ report.targets_file }}</p>

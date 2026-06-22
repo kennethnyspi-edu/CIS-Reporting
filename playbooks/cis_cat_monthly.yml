@@ -31,7 +31,11 @@
     # The default below is a safety fallback only; it should always
     # be overridden by the survey when launching via AWX.
     # ---------------------------------------------------------------
-        # ---------------------------------------------------------------
+    targets_config: >-
+      {{ survey_targets_config
+         | default(assessor_dir + '/config/targets_windows.conf') }}
+
+    # ---------------------------------------------------------------
     # per_target_timeout_seconds — optional AWX Survey override.
     # Caps how long Assessor-CLI may run against a single target before
     # being killed, so one hung/unreachable host doesn't block the rest
@@ -42,6 +46,19 @@
     # ---------------------------------------------------------------
     per_target_timeout_seconds: >-
       {{ survey_per_target_timeout_seconds | default('1800') }}
+
+    # ---------------------------------------------------------------
+    # awx_async_timeout_seconds — total time budget for the entire
+    # run_assessor.sh execution, covering ALL targets combined.
+    # Must be larger than (number_of_targets × per_target_timeout_seconds)
+    # plus overhead. Defaults to 86400s (24h) so a large target list
+    # never hits the AWX-level async timeout before the per-target
+    # timeouts inside the script have had a chance to fire.
+    #
+    # Survey variable name : survey_awx_async_timeout_seconds
+    # ---------------------------------------------------------------
+    awx_async_timeout_seconds: >-
+      {{ survey_awx_async_timeout_seconds | default('86400') | int }}
 
     # ---------------------------------------------------------------
     # Email reporting — optional AWX Survey overrides.
@@ -65,40 +82,6 @@
     smtp_host: "10.20.193.83"
     smtp_port: 25
     smtp_secure: "never"
-    
-    targets_config: >-
-      {{ survey_targets_config
-         | default(assessor_dir + '/config/targets_windows.conf') }}
-
-    # ---------------------------------------------------------------
-    # per_target_timeout_seconds — optional AWX Survey override.
-    # Caps how long Assessor-CLI may run against a single target before
-    # being killed, so one hung/unreachable host doesn't block the rest
-    # of the targets list. Passed through to run_assessor.sh, which
-    # itself defaults to 1800 (30 min) if this isn't set at all.
-    #
-    # Survey variable name : survey_per_target_timeout_seconds
-    # ---------------------------------------------------------------
-    per_target_timeout_seconds: >-
-      {{ survey_per_target_timeout_seconds | default('1800') }}
-
-    # ---------------------------------------------------------------
-    # Email reporting — optional AWX Survey overrides.
-    # send_email defaults to false so existing Job Templates keep their
-    # current behavior unless explicitly opted in via the survey.
-    #
-    # Survey variable names:
-    #   survey_send_email   (boolean / multiplechoice TRUE|FALSE)
-    #   survey_mail_to      (text, comma-separated if multiple addresses)
-    #   survey_mail_cc      (text, optional)
-    # ---------------------------------------------------------------
-    send_email: "{{ survey_send_email | default(false) | bool }}"
-    mail_from: "cis-cat-assessor@nyspi.org"
-    mail_to: >-
-      {{ (survey_mail_to | default('') ).split(',') | map('trim') | select | list }}
-    mail_cc: >-
-      {{ (survey_mail_cc | default('') ).split(',') | map('trim') | select | list
-         if (survey_mail_cc | default('')) | length > 0 else omit }}
 
   tasks:
 
@@ -197,7 +180,7 @@
         # Consumed by run_assessor.sh — caps per-target Assessor-CLI runtime
         PER_TARGET_TIMEOUT_SECONDS: "{{ per_target_timeout_seconds }}"
       register: assessor_run
-      async: 7200
+      async: "{{ awx_async_timeout_seconds }}"
       poll: 30
       ignore_errors: true
       no_log: false
