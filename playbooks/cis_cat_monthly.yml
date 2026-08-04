@@ -84,6 +84,12 @@
     smtp_secure: "never"
 
   tasks:
+    - name: whoami check
+      ansible.builtin.command: id
+      register: whoami_out
+
+    - debug:
+        var: whoami_out.stdout
 
     - name: "CIS-CAT | Verify Git project source script exists"
       ansible.builtin.stat:
