@@ -93,23 +93,23 @@
 
     - name: "DEBUG | Mount and path traversal check"
       ansible.builtin.shell:
-      cmd: |
-        echo "=== namei (permission chain for targets_config) ==="
-        namei -l "{{ targets_config }}" 2>&1 || echo "namei not available or path missing"
-        echo "=== is assessor_dir even mounted? ==="
-        mount | grep -i "{{ assessor_dir }}" || echo "NOT FOUND in mount table"
-        echo "=== ls assessor_dir itself ==="
-        ls -la "{{ assessor_dir }}" 2>&1 || echo "cannot list assessor_dir"
-        echo "=== ls assessor_dir/config ==="
-        ls -la "{{ assessor_dir }}/config" 2>&1 || echo "cannot list config dir"
-      executable: /bin/bash
+        cmd: |
+          echo "=== namei (permission chain for targets_config) ==="
+          namei -l "{{ targets_config }}" 2>&1 || echo "namei not available or path missing"
+          echo "=== is assessor_dir even mounted? ==="
+          mount | grep -i "{{ assessor_dir }}" || echo "NOT FOUND in mount table"
+          echo "=== ls assessor_dir itself ==="
+          ls -la "{{ assessor_dir }}" 2>&1 || echo "cannot list assessor_dir"
+          echo "=== ls assessor_dir/config ==="
+          ls -la "{{ assessor_dir }}/config" 2>&1 || echo "cannot list config dir"
+        executable: /bin/bash
       register: mount_debug
       changed_when: false
       failed_when: false
 
     - debug:
         var: mount_debug.stdout_lines
-
+        
     - name: "CIS-CAT | Verify Git project source script exists"
       ansible.builtin.stat:
         path: "{{ awx_project_dir }}/scripts/run_assessor.sh"
